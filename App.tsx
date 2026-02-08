@@ -12,12 +12,33 @@ import { getSafeOpenUrl } from './utils/urlUtils.ts';
 const STORAGE_KEY_SETTINGS = 'gemini_reader_settings';
 const STORAGE_KEY_PROGRESS = 'gemini_reader_progress';
 
+/** 單次 TTS 請求建議字數上限（依 API 限制） */
+const TTS_CHUNK_SIZE = 3500;
+
+/** 從 novel 取得要朗讀的純文字（支援 content 或 chapters） */
 function getNovelText(novel: NovelContent | null): string {
   if (!novel) return '';
   if (typeof (novel as any).content === 'string' && (novel as any).content.length > 0) return (novel as any).content;
   const chapters = (novel as any).chapters;
   if (Array.isArray(chapters)) return chapters.map((c: any) => c.text ?? c.content ?? '').join('\n');
   return '';
+}
+
+/** 將全文依字數分段，盡量在句末切開 */
+function splitTextIntoChunks(text: string, maxLen: number): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + maxLen, text.length);
+    if (end < text.length) {
+      const slice = text.slice(start, end);
+      const lastPeriod = Math.max(slice.lastIndexOf('。'), slice.lastIndexOf('！'), slice.lastIndexOf('？'), slice.lastIndexOf('\n'));
+      if (lastPeriod > maxLen * 0.4) end = start + lastPeriod + 1;
+    }
+    chunks.push(text.slice(start, end).trim());
+    start = end;
+  }
+  return chunks.filter(c => c.length > 0);
 }
 
 const App: React.FC = () => {
@@ -39,6 +60,8 @@ const App: React.FC = () => {
   const [fontSize, setFontSize] = useState(18);
   const [theme, setTheme] = useState<'dark' | 'sepia' | 'slate'>('dark');
   const [showResumeToast, setShowResumeToast] = useState(false);
+  const [debugStep, setDebugStep] = useState<string | null>(null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
 
   // --- Refs ---
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -47,6 +70,11 @@ const App: React.FC = () => {
   const startTimeRef = useRef<number>(0);
   const requestRef = useRef<number>(0);
   const lastSavedTimeRef = useRef<number>(0);
+  const playbackAbortedRef = useRef<boolean>(false);
+  const chunkIndexRef = useRef<number>(0);
+  const chunksRef = useRef<string[]>([]);
+  const totalDurationRef = useRef<number>(0);
+  const playedDurationRef = useRef<number>(0);
 
   // --- Initialization ---
   useEffect(() => {
@@ -141,50 +169,114 @@ const App: React.FC = () => {
 
   const playAudio = async () => {
     const text = getNovelText(novel);
+    const addLog = (line: string) => {
+      setDebugLog(prev => [...prev.slice(-14), `[${new Date().toLocaleTimeString()}] ${line}`]);
+    };
+    const DBG = (step: string, detail?: unknown) => {
+      const detailStr = detail !== undefined && detail !== null ? ` ${JSON.stringify(detail)}` : '';
+      setDebugStep(step);
+      addLog(step + detailStr);
+    };
     if (!novel) {
+      DBG('失敗：沒有 novel');
       setError('請先輸入小說網址並載入內容');
       return;
     }
     if (!text || text.length === 0) {
-      setError('此環境無法取得章節正文。若要朗讀請在本機執行 npm run dev:all，並從同一網址重新載入。');
+      DBG('失敗：沒有可朗讀文字', { hasContent: !!(novel as any).content, hasChapters: !!(novel as any).chapters });
+      setError('目前沒有可朗讀的內容，請確認網址並重新載入');
       return;
     }
+
+    const chunks = splitTextIntoChunks(text, TTS_CHUNK_SIZE);
+    playbackAbortedRef.current = false;
+    chunkIndexRef.current = 0;
+    chunksRef.current = chunks;
+    totalDurationRef.current = 0;
+    playedDurationRef.current = 0;
+
+    const playNextChunk = async () => {
+      if (playbackAbortedRef.current) {
+        setState(ReaderState.IDLE);
+        setDebugStep(null);
+        return;
+      }
+      const idx = chunkIndexRef.current;
+      if (idx >= chunksRef.current.length) {
+        setState(ReaderState.IDLE);
+        setCurrentTime(totalDurationRef.current);
+        saveReadingProgress(totalDurationRef.current);
+        setDebugStep(null);
+        return;
+      }
+
+      const ctx = audioContextRef.current!;
+      const chunk = chunksRef.current[idx];
+      try {
+        if (idx === 0) {
+          setState(ReaderState.READING);
+          setError(null);
+        } else {
+          setDebugStep(`產生語音 ${idx + 1}/${chunksRef.current.length}…`);
+        }
+        const base64Audio = await generateSpeech(chunk, voice);
+        if (playbackAbortedRef.current) return;
+        const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
+        totalDurationRef.current += audioBuffer.duration;
+        setDuration(totalDurationRef.current);
+
+        const source = ctx.createBufferSource();
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = volume;
+        gainNodeRef.current = gainNode;
+        source.buffer = audioBuffer;
+        source.playbackRate.value = playbackRate;
+        source.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        source.onended = () => {
+          playedDurationRef.current += audioBuffer.duration;
+          setCurrentTime(playedDurationRef.current);
+          if (Math.floor(playedDurationRef.current) % 10 < 2) {
+            saveReadingProgress(playedDurationRef.current);
+          }
+          chunkIndexRef.current += 1;
+          playNextChunk();
+        };
+
+        startTimeRef.current = ctx.currentTime;
+        lastSavedTimeRef.current = playedDurationRef.current;
+        source.start(0);
+        sourceRef.current = source;
+        setState(ReaderState.PLAYING);
+        setDebugStep(null);
+      } catch (err: any) {
+        if (playbackAbortedRef.current) return;
+        const msg = err?.message ?? err?.toString?.() ?? '';
+        setDebugStep(`錯誤: ${msg}`);
+        addLog(`錯誤: ${msg}`);
+        setState(ReaderState.ERROR);
+        if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota')) {
+          setError('語音服務無法使用：請在 Vercel 專案設定中新增環境變數 GEMINI_API_KEY');
+        } else {
+          setError(msg || '語音產生失敗，請稍後再試');
+        }
+      }
+    };
+
     try {
       setState(ReaderState.READING);
       setError(null);
-      const resumeFrom = currentTime;
+      DBG('1/5 初始化 AudioContext');
       const ctx = initAudioContext();
       if (ctx.state === 'suspended') await ctx.resume();
       if (sourceRef.current) sourceRef.current.stop();
-
-      const textToRead = text.slice(0, 4000);
-      const base64Audio = await generateSpeech(textToRead, voice);
-      const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-      setDuration(audioBuffer.duration);
-
-      const source = ctx.createBufferSource();
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = volume;
-      gainNodeRef.current = gainNode;
-      source.buffer = audioBuffer;
-      source.playbackRate.value = playbackRate;
-      source.connect(gainNode);
-      gainNode.connect(ctx.destination);
-
-      source.onended = () => {
-        setState(ReaderState.IDLE);
-        setCurrentTime(0);
-        saveReadingProgress(0);
-      };
-
-      startTimeRef.current = ctx.currentTime;
-      lastSavedTimeRef.current = resumeFrom;
-      const offset = resumeFrom / playbackRate;
-      source.start(0, Math.min(offset, audioBuffer.duration));
-      sourceRef.current = source;
-      setState(ReaderState.PLAYING);
+      DBG('2/5 開始分段朗讀', { 總段數: chunks.length, 總字數: text.length });
+      await playNextChunk();
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? '';
+      setDebugStep(`錯誤: ${msg}`);
+      addLog(`錯誤: ${msg}`);
       setState(ReaderState.ERROR);
       if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota')) {
         setError('語音服務無法使用：請在 Vercel 專案設定中新增環境變數 GEMINI_API_KEY');
@@ -211,10 +303,11 @@ const App: React.FC = () => {
   };
 
   const handleStop = () => {
+    playbackAbortedRef.current = true;
     try { sourceRef.current?.stop(); } catch(e) {}
     saveReadingProgress(currentTime);
     setState(ReaderState.IDLE);
-    setCurrentTime(0);
+    setCurrentTime(playedDurationRef.current);
   };
 
   const handleVolumeChange = (v: number) => {
@@ -298,36 +391,64 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* 固定底部播放列 */}
-      <div className="fixed bottom-0 left-0 right-0 z-[100] flex items-center justify-center gap-4 px-4 py-4 bg-slate-900/95 border-t border-white/10 backdrop-blur-md shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
-        <span className="text-slate-400 text-sm font-medium truncate max-w-[120px] md:max-w-[200px]" title={novel?.title}>{novel?.title || '未選書'}</span>
-        <button
-          type="button"
-          onClick={handlePlayPause}
-          disabled={state === ReaderState.READING}
-          className="flex-shrink-0 w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white shadow-lg transition-colors"
-          title={state === ReaderState.READING ? '正在產生語音…' : state === ReaderState.PLAYING ? '暫停' : '播放'}
-        >
-          {state === ReaderState.READING ? (
-            <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.22-8.6" strokeLinecap="round"/></svg>
-          ) : state === ReaderState.PLAYING ? (
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={handleStop}
-          className="flex-shrink-0 w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 transition-colors"
-          title="停止"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-        </button>
-        <span className="text-slate-500 text-xs tabular-nums">
-          {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}
-          {duration > 0 && ` / ${Math.floor(duration / 60)}:${(Math.floor(duration % 60)).toString().padStart(2, '0')}`}
-        </span>
+      {/* 固定底部播放列：高 z-index 確保在 iframe 內也看得見 */}
+      <div className="fixed bottom-0 left-0 right-0 z-[100] flex flex-col gap-2 px-4 py-4 bg-slate-900/95 border-t border-white/10 backdrop-blur-md shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
+        {/* 畫面上的除錯紀錄（不需開 Console） */}
+        {debugLog.length > 0 && (
+          <div className="rounded-lg bg-black/40 border border-amber-500/40 p-2 max-h-28 overflow-y-auto">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-amber-400 text-xs font-bold">除錯紀錄（按播放後會更新）</span>
+              <button type="button" onClick={() => { setDebugLog([]); setDebugStep(null); }} className="text-slate-500 hover:text-white text-xs px-2">清除</button>
+            </div>
+            <div className="text-amber-200/90 text-xs font-mono space-y-0.5">
+              {debugLog.map((line, i) => (
+                <div key={i} className={line.includes('錯誤') ? 'text-red-400' : ''}>{line}</div>
+              ))}
+            </div>
+          </div>
+        )}
+        {debugStep && (
+          <div className="flex items-center justify-center gap-2 text-amber-400 text-xs font-mono">
+            <span>目前: {debugStep}</span>
+            <button type="button" onClick={() => setDebugStep(null)} className="text-slate-500 hover:text-white px-1" aria-label="關閉">×</button>
+          </div>
+        )}
+        {error && (
+          <div className="flex items-center justify-center gap-2 text-red-400 text-sm">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError(null)} className="text-slate-400 hover:text-white px-2" aria-label="關閉">×</button>
+          </div>
+        )}
+        <div className="flex items-center justify-center gap-4">
+          <span className="text-slate-400 text-sm font-medium truncate max-w-[120px] md:max-w-[200px]" title={novel?.title}>{novel?.title || '未選書'}</span>
+          <button
+            type="button"
+            onClick={handlePlayPause}
+            disabled={!getNovelText(novel).length || state === ReaderState.READING}
+            className="flex-shrink-0 w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white shadow-lg transition-colors"
+            title={state === ReaderState.READING ? '正在產生語音…' : state === ReaderState.PLAYING ? '暫停' : '播放'}
+          >
+            {state === ReaderState.READING ? (
+              <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.22-8.6" strokeLinecap="round"/></svg>
+            ) : state === ReaderState.PLAYING ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={handleStop}
+            className="flex-shrink-0 w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 transition-colors"
+            title="停止"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+          <span className="text-slate-500 text-xs tabular-nums">
+            {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}
+            {duration > 0 && ` / ${Math.floor(duration / 60)}:${(Math.floor(duration % 60)).toString().padStart(2, '0')}`}
+          </span>
+        </div>
       </div>
 
       {/* Settings Modal */}
