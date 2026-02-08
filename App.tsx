@@ -1,10 +1,10 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import Header from './components/Header.tsx';
-import Sidebar from './components/Sidebar.tsx';
-import NovelInput from './components/NovelInput.tsx';
-import NovelDisplay from './components/NovelDisplay.tsx';
-import AudioControls from './components/AudioControls.tsx';
+import Header from './components/header';
+import Sidebar from './components/sidebar';
+import NovelInput from './components/novelinput';
+import NovelDisplay from './components/noveldisplay';
+import AudioControls from './components/audiocontrols';
 import { NovelContent, ReaderState } from './types';
 import { fetchNovelContent, generateSpeech } from './services/geminiService';
 import { decode, decodeAudioData } from './utils/audioUtils';
