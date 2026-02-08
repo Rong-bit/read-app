@@ -5,15 +5,11 @@ import Sidebar from './components/sidebar.tsx';
 import NovelInput from './components/novelinput.tsx';
 import NovelDisplay from './components/noveldisplay.tsx';
 import { NovelContent, ReaderState } from './types.ts';
-import { fetchNovelContent, generateSpeech } from './services/geminiService.ts';
-import { decode, decodeAudioData } from './utils/audioUtils.ts';
+import { fetchNovelContent } from './services/geminiService.ts';
 import { getSafeOpenUrl } from './utils/urlUtils.ts';
 
 const STORAGE_KEY_SETTINGS = 'gemini_reader_settings';
 const STORAGE_KEY_PROGRESS = 'gemini_reader_progress';
-
-/** 單次 TTS 請求建議字數上限（依 API 限制） */
-const TTS_CHUNK_SIZE = 3500;
 
 /** 從 novel 取得要朗讀的純文字（支援多種後端回傳格式） */
 function getNovelText(novel: NovelContent | null): string {
@@ -40,21 +36,23 @@ function htmlToPlainText(html: string): string {
   return text;
 }
 
-/** 將全文依字數分段，盡量在句末切開 */
-function splitTextIntoChunks(text: string, maxLen: number): string[] {
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    let end = Math.min(start + maxLen, text.length);
-    if (end < text.length) {
-      const slice = text.slice(start, end);
-      const lastPeriod = Math.max(slice.lastIndexOf('。'), slice.lastIndexOf('！'), slice.lastIndexOf('？'), slice.lastIndexOf('\n'));
-      if (lastPeriod > maxLen * 0.4) end = start + lastPeriod + 1;
+/** 將文字切成適合 Web Speech API 的短句（依標點再依長度） */
+function splitForBrowserTTS(text: string, maxLen = 120): string[] {
+  const byPunct = text.split(/([。！？\n]+)/).filter(Boolean);
+  const parts: string[] = [];
+  let acc = '';
+  for (let i = 0; i < byPunct.length; i++) {
+    acc += byPunct[i];
+    const trimmed = acc.trim();
+    if (trimmed.length >= maxLen || /[。！？]$/.test(trimmed)) {
+      if (trimmed.length > maxLen) {
+        for (let j = 0; j < trimmed.length; j += maxLen) parts.push(trimmed.slice(j, j + maxLen));
+      } else if (trimmed) parts.push(trimmed);
+      acc = '';
     }
-    chunks.push(text.slice(start, end).trim());
-    start = end;
   }
-  return chunks.filter(c => c.length > 0);
+  if (acc.trim()) parts.push(acc.trim());
+  return parts.filter(p => p.length > 0);
 }
 
 const App: React.FC = () => {
@@ -81,17 +79,9 @@ const App: React.FC = () => {
   const [pasteText, setPasteText] = useState('');
 
   // --- Refs ---
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const requestRef = useRef<number>(0);
-  const lastSavedTimeRef = useRef<number>(0);
-  const playbackAbortedRef = useRef<boolean>(false);
-  const chunkIndexRef = useRef<number>(0);
-  const chunksRef = useRef<string[]>([]);
-  const totalDurationRef = useRef<number>(0);
-  const playedDurationRef = useRef<number>(0);
+  const browserTTSActiveRef = useRef(false);
+  const browserTTSQueueRef = useRef<string[]>([]);
+  const browserTTSIndexRef = useRef(0);
 
   // --- Initialization ---
   useEffect(() => {
@@ -127,38 +117,7 @@ const App: React.FC = () => {
     if (!novel) return;
     const progress = { novel, currentTime: time };
     localStorage.setItem(STORAGE_KEY_PROGRESS, JSON.stringify(progress));
-    lastSavedTimeRef.current = time;
   };
-
-  const initAudioContext = () => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-    }
-    return audioContextRef.current;
-  };
-
-  const updateProgress = () => {
-    if (audioContextRef.current && state === ReaderState.PLAYING) {
-      const elapsedSinceStart = audioContextRef.current.currentTime - startTimeRef.current;
-      const newTime = Math.min(lastSavedTimeRef.current + (elapsedSinceStart * playbackRate), duration);
-      setCurrentTime(newTime);
-      
-      if (Math.floor(newTime) % 5 === 0 && Math.abs(newTime - lastSavedTimeRef.current) > 1) {
-        const progress = { novel, currentTime: newTime };
-        localStorage.setItem(STORAGE_KEY_PROGRESS, JSON.stringify(progress));
-      }
-    }
-    requestRef.current = requestAnimationFrame(updateProgress);
-  };
-
-  useEffect(() => {
-    if (state === ReaderState.PLAYING) {
-      requestRef.current = requestAnimationFrame(updateProgress);
-    } else {
-      cancelAnimationFrame(requestRef.current);
-    }
-    return () => cancelAnimationFrame(requestRef.current);
-  }, [state, duration, playbackRate]);
 
   const handleSearch = async (input: string) => {
     try {
@@ -206,192 +165,75 @@ const App: React.FC = () => {
     if (url) window.open(url, '_blank');
   };
 
-  const playAudio = async () => {
+  const playWithBrowserTTS = () => {
     const text = getNovelText(novel);
-    const addLog = (line: string) => {
-      setDebugLog(prev => [...prev.slice(-14), `[${new Date().toLocaleTimeString()}] ${line}`]);
-    };
-    const DBG = (step: string, detail?: unknown) => {
-      const detailStr = detail !== undefined && detail !== null ? ` ${JSON.stringify(detail)}` : '';
-      setDebugStep(step);
-      addLog(step + detailStr);
-    };
-    if (!novel) {
-      DBG('失敗：沒有 novel');
-      setError('請先輸入小說網址並載入內容');
-      return;
-    }
     if (!text || text.length === 0) {
-      const keys = novel ? Object.keys(novel as object).join(', ') : '';
-      DBG('失敗：沒有可朗讀文字', { keys, hasContent: !!(novel as any).content, hasChapters: !!(novel as any).chapters });
-      setError('目前沒有可朗讀的內容。若後端已抓取成功，請確認回傳包含 content / fullContent / chapter.text 或 chapters。');
+      setError('目前沒有可朗讀的內容');
       return;
     }
+    const segments = splitForBrowserTTS(text);
+    if (segments.length === 0) return;
+    browserTTSActiveRef.current = true;
+    browserTTSQueueRef.current = segments;
+    browserTTSIndexRef.current = 0;
+    setError(null);
+    setState(ReaderState.PLAYING);
+    setDuration(0);
+    setCurrentTime(0);
 
-    const chunks = splitTextIntoChunks(text, TTS_CHUNK_SIZE);
-    playbackAbortedRef.current = false;
-    chunkIndexRef.current = 0;
-    chunksRef.current = chunks;
-    totalDurationRef.current = 0;
-    playedDurationRef.current = 0;
-
-    const playNextChunk = async () => {
-      if (playbackAbortedRef.current) {
+    const synth = window.speechSynthesis;
+    const speakNext = () => {
+      if (!browserTTSActiveRef.current) return;
+      const idx = browserTTSIndexRef.current;
+      if (idx >= browserTTSQueueRef.current.length) {
         setState(ReaderState.IDLE);
-        setDebugStep(null);
+        browserTTSActiveRef.current = false;
         return;
       }
-      const idx = chunkIndexRef.current;
-      if (idx >= chunksRef.current.length) {
-        setState(ReaderState.IDLE);
-        setCurrentTime(totalDurationRef.current);
-        saveReadingProgress(totalDurationRef.current);
-        setDebugStep(null);
-        return;
-      }
-
-      const ctx = audioContextRef.current!;
-      const chunk = chunksRef.current[idx];
-      try {
-        if (idx === 0) {
-          setState(ReaderState.READING);
-          setError(null);
-        } else {
-          setDebugStep(`產生語音 ${idx + 1}/${chunksRef.current.length}…`);
-        }
-        const base64Audio = await generateSpeech(chunk, voice);
-        if (playbackAbortedRef.current) return;
-        const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-        if (!audioBuffer || audioBuffer.duration <= 0) {
-          setError('語音解碼失敗或長度為 0，請重試');
-          setState(ReaderState.ERROR);
-          return;
-        }
-        totalDurationRef.current += audioBuffer.duration;
-        setDuration(totalDurationRef.current);
-
-        if (ctx.state === 'suspended') await ctx.resume();
-
-        const source = ctx.createBufferSource();
-        const gainNode = ctx.createGain();
-        gainNode.gain.value = volume;
-        gainNodeRef.current = gainNode;
-        source.buffer = audioBuffer;
-        source.playbackRate.value = playbackRate;
-        source.connect(gainNode);
-        gainNode.connect(ctx.destination);
-
-        source.onended = () => {
-          playedDurationRef.current += audioBuffer.duration;
-          setCurrentTime(playedDurationRef.current);
-          if (Math.floor(playedDurationRef.current) % 10 < 2) {
-            saveReadingProgress(playedDurationRef.current);
-          }
-          chunkIndexRef.current += 1;
-          playNextChunk();
-        };
-
-        startTimeRef.current = ctx.currentTime;
-        lastSavedTimeRef.current = playedDurationRef.current;
-        try {
-          source.start(0);
-        } catch (startErr: any) {
-          setError('無法啟動播放：' + (startErr?.message || '請點擊一次播放鈕後再試'));
-          setState(ReaderState.ERROR);
-          addLog('source.start 錯誤: ' + (startErr?.message || startErr));
-          return;
-        }
-        sourceRef.current = source;
-        setState(ReaderState.PLAYING);
-        setDebugStep(null);
-      } catch (err: any) {
-        if (playbackAbortedRef.current) return;
-        const msg = err?.message ?? err?.toString?.() ?? '';
-        setDebugStep(`錯誤: ${msg}`);
-        addLog(`錯誤: ${msg}`);
-        setState(ReaderState.ERROR);
-        if (msg.includes('API key') || msg.includes('API key must be set') || msg.includes('GEMINI')) {
-          setError('Gemini 金鑰未生效。若在「本機」：請建 .env 並重啟。若在「Vercel」：環境變數只供後端用，且需重新部署後才會生效；若語音是在瀏覽器直連 Gemini，請改由後端 API 代為呼叫。');
-        } else if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('quota')) {
-          setError('語音無法播放：請設定 GEMINI_API_KEY（本機 .env，Vercel 環境變數）');
-        } else {
-          setError(msg || '語音產生失敗，請稍後再試');
-        }
-      }
+      const seg = browserTTSQueueRef.current[idx];
+      const u = new SpeechSynthesisUtterance(seg);
+      u.lang = 'zh-TW';
+      u.rate = playbackRate;
+      u.volume = volume;
+      u.onend = () => {
+        browserTTSIndexRef.current++;
+        speakNext();
+      };
+      u.onerror = () => {
+        browserTTSIndexRef.current++;
+        speakNext();
+      };
+      synth.speak(u);
     };
-
-    try {
-      setState(ReaderState.READING);
-      setError(null);
-      DBG('1/5 初始化 AudioContext');
-      const ctx = initAudioContext();
-      if (ctx.state === 'suspended') await ctx.resume();
-      if (sourceRef.current) sourceRef.current.stop();
-      // 在用戶點擊的同一流程內播放一次靜音，解鎖瀏覽器自動播放限制
-      try {
-        const silentFrames = ctx.sampleRate * 0.05;
-        const silentBuf = ctx.createBuffer(1, silentFrames, ctx.sampleRate);
-        const silentSource = ctx.createBufferSource();
-        silentSource.buffer = silentBuf;
-        silentSource.connect(ctx.destination);
-        silentSource.start(0);
-      } catch (_) {}
-      DBG('2/5 開始分段朗讀', { 總段數: chunks.length, 總字數: text.length });
-      await playNextChunk();
-    } catch (err: any) {
-      const msg = err?.message ?? err?.toString?.() ?? '';
-      setDebugStep(`錯誤: ${msg}`);
-      addLog(`錯誤: ${msg}`);
-      setState(ReaderState.ERROR);
-      if (msg.includes('API key') || msg.includes('API key must be set') || msg.includes('GEMINI')) {
-        setError('Gemini 金鑰未生效。若在「本機」：請建 .env 並重啟。若在「Vercel」：環境變數只供後端用，且需重新部署後才會生效；若語音是在瀏覽器直連 Gemini，請改由後端 API 代為呼叫。');
-      } else if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('quota')) {
-        setError('語音無法播放：請設定 GEMINI_API_KEY（本機 .env，Vercel 環境變數）');
-      } else {
-        setError(msg || '語音產生失敗，請稍後再試');
-      }
-    }
+    speakNext();
   };
 
   const handlePlayPause = () => {
-    const ctx = audioContextRef.current;
-    if (state === ReaderState.PLAYING && ctx) {
-      ctx.suspend();
-      setState(ReaderState.PAUSED);
-      saveReadingProgress(currentTime);
-    } else if (state === ReaderState.PAUSED && ctx) {
-      ctx.resume();
-      startTimeRef.current = ctx.currentTime;
-      lastSavedTimeRef.current = currentTime;
-      setState(ReaderState.PLAYING);
-    } else {
-      playAudio();
+    if (browserTTSActiveRef.current) {
+      const synth = window.speechSynthesis;
+      if (state === ReaderState.PLAYING) {
+        synth.pause();
+        setState(ReaderState.PAUSED);
+      } else {
+        synth.resume();
+        setState(ReaderState.PLAYING);
+      }
+      return;
     }
+    playWithBrowserTTS();
   };
 
   const handleStop = () => {
-    playbackAbortedRef.current = true;
-    try { sourceRef.current?.stop(); } catch(e) {}
-    saveReadingProgress(currentTime);
-    setState(ReaderState.IDLE);
-    setCurrentTime(playedDurationRef.current);
-  };
-
-  const handleVolumeChange = (v: number) => {
-    setVolume(v);
-    if (gainNodeRef.current && audioContextRef.current) {
-      gainNodeRef.current.gain.setTargetAtTime(v, audioContextRef.current.currentTime, 0.05);
+    if (browserTTSActiveRef.current) {
+      window.speechSynthesis.cancel();
+      browserTTSActiveRef.current = false;
+      setState(ReaderState.IDLE);
+      setCurrentTime(0);
     }
   };
 
-  const handlePlaybackRateChange = (r: number) => {
-    setPlaybackRate(r);
-    if (sourceRef.current && audioContextRef.current) {
-      sourceRef.current.playbackRate.setTargetAtTime(r, audioContextRef.current.currentTime, 0.05);
-      startTimeRef.current = audioContextRef.current.currentTime;
-      lastSavedTimeRef.current = currentTime;
-    }
-  };
+  const handleVolumeChange = (v: number) => setVolume(v);
+  const handlePlaybackRateChange = (r: number) => setPlaybackRate(r);
 
   const getThemeClass = () => {
     switch(theme) {
