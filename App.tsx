@@ -291,13 +291,12 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* 音頻控制已禁用，因為不再抓取內容 */}
-      {/* <AudioControls 
+      <AudioControls
         state={state} onPlayPause={handlePlayPause} onStop={handleStop} onNext={handleNextChapter}
         voice={voice} onVoiceChange={setVoice} title={novel?.title || '未命名'}
         volume={volume} onVolumeChange={handleVolumeChange} playbackRate={playbackRate} onPlaybackRateChange={handlePlaybackRateChange}
         currentTime={currentTime} duration={duration}
-      /> */}
+      />
 
       {/* Settings Modal */}
       {isSettingsOpen && (
