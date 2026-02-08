@@ -224,8 +224,29 @@ const App: React.FC = () => {
     if (url) window.open(url, '_blank');
   };
 
-  const playWithBrowserTTS = () => {
-    const text = getNovelText(novel);
+  const playWithBrowserTTS = async () => {
+    let text = getNovelText(novel);
+    if (!text?.trim() && (novel as any)?.sourceUrl) {
+      setState(ReaderState.FETCHING);
+      setError(null);
+      try {
+        const data = await fetchNovelContent((novel as any).sourceUrl);
+        const extracted = getNovelText(data as NovelContent);
+        text = extracted || (typeof (data as any)?.content === 'string' ? (data as any).content : '');
+        text = ensurePlainText(text);
+        setNovel((prev: NovelContent | null) => ({
+          ...(typeof data === 'object' && data !== null ? data : {}),
+          title: (data as any)?.title ?? (prev as any)?.title ?? '載入的內容',
+          sourceUrl: (novel as any)?.sourceUrl ?? (data as any)?.sourceUrl,
+          content: text,
+        } as NovelContent));
+      } catch (err: any) {
+        setError(err?.message || '無法取得該網址的內容，請改用「貼上文章」貼內文。');
+        setState(ReaderState.IDLE);
+        return;
+      }
+      setState(ReaderState.IDLE);
+    }
     if (!text || text.length === 0) {
       setError('目前沒有可朗讀的內容');
       return;
@@ -281,6 +302,7 @@ const App: React.FC = () => {
     }
     playWithBrowserTTS();
   };
+  const canPlay = novel && (getNovelText(novel).length > 0 || !!(novel as any)?.sourceUrl);
 
   const handleStop = () => {
     if (browserTTSActiveRef.current) {
@@ -410,11 +432,11 @@ const App: React.FC = () => {
           <button
             type="button"
             onClick={handlePlayPause}
-            disabled={!getNovelText(novel).length || state === ReaderState.READING}
+            disabled={!canPlay || state === ReaderState.READING || state === ReaderState.FETCHING}
             className="flex-shrink-0 w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white shadow-lg transition-colors"
-            title={state === ReaderState.READING ? '正在產生語音…' : state === ReaderState.PLAYING ? '暫停' : '播放'}
+            title={state === ReaderState.FETCHING ? '正在取得內容…' : state === ReaderState.READING ? '正在產生語音…' : state === ReaderState.PLAYING ? '暫停' : '播放'}
           >
-            {state === ReaderState.READING ? (
+            {(state === ReaderState.READING || state === ReaderState.FETCHING) ? (
               <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.22-8.6" strokeLinecap="round"/></svg>
             ) : state === ReaderState.PLAYING ? (
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
