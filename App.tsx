@@ -261,7 +261,14 @@ const App: React.FC = () => {
 
         startTimeRef.current = ctx.currentTime;
         lastSavedTimeRef.current = playedDurationRef.current;
-        source.start(0);
+        try {
+          source.start(0);
+        } catch (startErr: any) {
+          setError('無法啟動播放：' + (startErr?.message || '請點擊一次播放鈕後再試'));
+          setState(ReaderState.ERROR);
+          addLog('source.start 錯誤: ' + (startErr?.message || startErr));
+          return;
+        }
         sourceRef.current = source;
         setState(ReaderState.PLAYING);
         setDebugStep(null);
@@ -286,6 +293,15 @@ const App: React.FC = () => {
       const ctx = initAudioContext();
       if (ctx.state === 'suspended') await ctx.resume();
       if (sourceRef.current) sourceRef.current.stop();
+      // 在用戶點擊的同一流程內播放一次靜音，解鎖瀏覽器自動播放限制
+      try {
+        const silentFrames = ctx.sampleRate * 0.05;
+        const silentBuf = ctx.createBuffer(1, silentFrames, ctx.sampleRate);
+        const silentSource = ctx.createBufferSource();
+        silentSource.buffer = silentBuf;
+        silentSource.connect(ctx.destination);
+        silentSource.start(0);
+      } catch (_) {}
       DBG('2/5 開始分段朗讀', { 總段數: chunks.length, 總字數: text.length });
       await playNextChunk();
     } catch (err: any) {
