@@ -31,6 +31,15 @@ function getNovelText(novel: NovelContent | null): string {
   return '';
 }
 
+/** 從 HTML 或混合內容擷取純文字（供貼上文章使用） */
+function htmlToPlainText(html: string): string {
+  if (!html || !html.trim()) return '';
+  const div = document.createElement('div');
+  div.innerHTML = html.trim();
+  const text = (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim();
+  return text;
+}
+
 /** 將全文依字數分段，盡量在句末切開 */
 function splitTextIntoChunks(text: string, maxLen: number): string[] {
   const chunks: string[] = [];
@@ -69,6 +78,7 @@ const App: React.FC = () => {
   const [showResumeToast, setShowResumeToast] = useState(false);
   const [debugStep, setDebugStep] = useState<string | null>(null);
   const [debugLog, setDebugLog] = useState<string[]>([]);
+  const [pasteText, setPasteText] = useState('');
 
   // --- Refs ---
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -163,9 +173,31 @@ const App: React.FC = () => {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "無法處理網址。請檢查網址是否正確。");
+      const status = err?.status ?? err?.response?.status;
+      const msg = err?.message || "無法處理網址。請檢查網址是否正確。";
+      if (status === 405 || String(msg).includes('405')) {
+        setError('後端回傳 405：此 API 不允許目前請求方法。請確認後端已部署且接受對應的 GET/POST；或改用下方「貼上文章」直接貼內容。');
+      } else {
+        setError(msg);
+      }
       setState(ReaderState.ERROR);
     }
+  };
+
+  const handleLoadPastedContent = () => {
+    const text = htmlToPlainText(pasteText);
+    if (!text || text.length < 10) {
+      setError('請貼上至少一段文章內容（HTML 或純文字皆可）');
+      return;
+    }
+    setError(null);
+    setNovel({
+      title: '貼上的文章',
+      content: text,
+    } as NovelContent);
+    saveReadingProgress(0);
+    setShowSearch(false);
+    setState(ReaderState.IDLE);
   };
 
   const handleNextChapter = () => {
@@ -399,6 +431,24 @@ const App: React.FC = () => {
               </div>
 
               <NovelInput onSearch={handleSearch} isLoading={state === ReaderState.FETCHING} />
+
+              <div className="max-w-3xl mx-auto mt-8 p-6 bg-slate-800/30 rounded-2xl border border-slate-700/50">
+                <p className="text-sm font-bold text-slate-400 mb-3 uppercase tracking-wider">或貼上文章內容（API 失敗時可用）</p>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  placeholder="貼上網頁 HTML 或純文字，例如從小說網站複製的整段內容…"
+                  className="w-full h-32 px-4 py-3 bg-slate-800/50 border border-slate-700 rounded-xl text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 resize-y"
+                />
+                <button
+                  type="button"
+                  onClick={handleLoadPastedContent}
+                  disabled={!pasteText.trim()}
+                  className="mt-3 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all"
+                >
+                  載入並可朗讀
+                </button>
+              </div>
 
               {novel && (
                 <div className="flex justify-center mb-8">
