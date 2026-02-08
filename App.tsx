@@ -15,15 +15,59 @@ const STORAGE_KEY_PROGRESS = 'gemini_reader_progress';
 function getNovelText(novel: NovelContent | null): string {
   if (!novel) return '';
   const n = novel as any;
-  if (typeof n.content === 'string' && n.content.length > 0) return n.content;
-  if (typeof n.fullContent === 'string' && n.fullContent.length > 0) return n.fullContent;
-  if (typeof n.text === 'string' && n.text.length > 0) return n.text;
-  if (n.data && typeof n.data.content === 'string') return n.data.content;
-  if (n.data && typeof n.data.text === 'string') return n.data.text;
-  if (n.chapter && typeof n.chapter.text === 'string') return n.chapter.text;
-  if (n.chapter && typeof n.chapter.content === 'string') return n.chapter.content;
+  const candidates: string[] = [];
+  const push = (s: unknown) => {
+    if (typeof s === 'string' && s.length > 0) candidates.push(s);
+  };
+  push(n.content);
+  push(n.fullContent);
+  push(n.text);
+  push(n.body);
+  push(n.articleText);
+  if (n.data) {
+    push(n.data.content);
+    push(n.data.text);
+    push(n.data.body);
+  }
+  if (n.chapter) {
+    push(n.chapter.text);
+    push(n.chapter.content);
+    push(n.chapter.body);
+  }
   const chapters = n.chapters ?? n.data?.chapters;
-  if (Array.isArray(chapters)) return chapters.map((c: any) => c.text ?? c.content ?? '').join('\n');
+  if (Array.isArray(chapters)) {
+    const joined = chapters.map((c: any) => c.text ?? c.content ?? c.body ?? '').join('\n');
+    if (joined.trim()) candidates.push(joined);
+  }
+  if (candidates.length > 0) {
+    const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b));
+    if (best.length > 0) return best;
+  }
+  // 後備：從物件中找最長的像內文的字串（排除 URL、title 等）
+  const seen = new Set<string>();
+  const collect = (obj: any): void => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const key of Object.keys(obj)) {
+      const v = obj[key];
+      if (typeof v === 'string') {
+        if (v.length < 50) continue;
+        if (/^https?:\/\//i.test(v) || key === 'sourceUrl' || key === 'url') continue;
+        if (/[\u4e00-\u9fff]/.test(v) && !seen.has(v)) {
+          seen.add(v);
+          candidates.push(v);
+        }
+      } else if (Array.isArray(v)) {
+        v.forEach((item: any) => collect(item));
+      } else if (typeof v === 'object') {
+        collect(v);
+      }
+    }
+  };
+  collect(n);
+  if (candidates.length > 0) {
+    const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b));
+    return best;
+  }
   return '';
 }
 
