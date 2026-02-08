@@ -15,11 +15,18 @@ const STORAGE_KEY_PROGRESS = 'gemini_reader_progress';
 /** 單次 TTS 請求建議字數上限（依 API 限制） */
 const TTS_CHUNK_SIZE = 3500;
 
-/** 從 novel 取得要朗讀的純文字（支援 content 或 chapters） */
+/** 從 novel 取得要朗讀的純文字（支援多種後端回傳格式） */
 function getNovelText(novel: NovelContent | null): string {
   if (!novel) return '';
-  if (typeof (novel as any).content === 'string' && (novel as any).content.length > 0) return (novel as any).content;
-  const chapters = (novel as any).chapters;
+  const n = novel as any;
+  if (typeof n.content === 'string' && n.content.length > 0) return n.content;
+  if (typeof n.fullContent === 'string' && n.fullContent.length > 0) return n.fullContent;
+  if (typeof n.text === 'string' && n.text.length > 0) return n.text;
+  if (n.data && typeof n.data.content === 'string') return n.data.content;
+  if (n.data && typeof n.data.text === 'string') return n.data.text;
+  if (n.chapter && typeof n.chapter.text === 'string') return n.chapter.text;
+  if (n.chapter && typeof n.chapter.content === 'string') return n.chapter.content;
+  const chapters = n.chapters ?? n.data?.chapters;
   if (Array.isArray(chapters)) return chapters.map((c: any) => c.text ?? c.content ?? '').join('\n');
   return '';
 }
@@ -183,8 +190,9 @@ const App: React.FC = () => {
       return;
     }
     if (!text || text.length === 0) {
-      DBG('失敗：沒有可朗讀文字', { hasContent: !!(novel as any).content, hasChapters: !!(novel as any).chapters });
-      setError('目前沒有可朗讀的內容，請確認網址並重新載入');
+      const keys = novel ? Object.keys(novel as object).join(', ') : '';
+      DBG('失敗：沒有可朗讀文字', { keys, hasContent: !!(novel as any).content, hasChapters: !!(novel as any).chapters });
+      setError('目前沒有可朗讀的內容。若後端已抓取成功，請確認回傳包含 content / fullContent / chapter.text 或 chapters。');
       return;
     }
 
@@ -222,8 +230,15 @@ const App: React.FC = () => {
         const base64Audio = await generateSpeech(chunk, voice);
         if (playbackAbortedRef.current) return;
         const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
+        if (!audioBuffer || audioBuffer.duration <= 0) {
+          setError('語音解碼失敗或長度為 0，請重試');
+          setState(ReaderState.ERROR);
+          return;
+        }
         totalDurationRef.current += audioBuffer.duration;
         setDuration(totalDurationRef.current);
+
+        if (ctx.state === 'suspended') await ctx.resume();
 
         const source = ctx.createBufferSource();
         const gainNode = ctx.createGain();
@@ -256,8 +271,8 @@ const App: React.FC = () => {
         setDebugStep(`錯誤: ${msg}`);
         addLog(`錯誤: ${msg}`);
         setState(ReaderState.ERROR);
-        if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota')) {
-          setError('語音服務無法使用：請在 Vercel 專案設定中新增環境變數 GEMINI_API_KEY');
+        if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota') || msg.includes('GEMINI')) {
+          setError('語音無法播放：請設定 GEMINI_API_KEY（本機在 .env，Vercel 在專案環境變數）');
         } else {
           setError(msg || '語音產生失敗，請稍後再試');
         }
@@ -278,8 +293,8 @@ const App: React.FC = () => {
       setDebugStep(`錯誤: ${msg}`);
       addLog(`錯誤: ${msg}`);
       setState(ReaderState.ERROR);
-      if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota')) {
-        setError('語音服務無法使用：請在 Vercel 專案設定中新增環境變數 GEMINI_API_KEY');
+      if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota') || msg.includes('GEMINI')) {
+        setError('語音無法播放：請設定 GEMINI_API_KEY（本機 .env / Vercel 環境變數）');
       } else {
         setError(msg || '語音產生失敗，請稍後再試');
       }
