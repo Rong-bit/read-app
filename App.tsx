@@ -4,7 +4,6 @@ import Header from './components/header.tsx';
 import Sidebar from './components/sidebar.tsx';
 import NovelInput from './components/novelinput.tsx';
 import NovelDisplay from './components/noveldisplay.tsx';
-import AudioControls from './components/audiocontrols.tsx';
 import { NovelContent, ReaderState } from './types.ts';
 import { fetchNovelContent, generateSpeech } from './services/geminiService.ts';
 import { decode, decodeAudioData } from './utils/audioUtils.ts';
@@ -12,6 +11,14 @@ import { getSafeOpenUrl } from './utils/urlUtils.ts';
 
 const STORAGE_KEY_SETTINGS = 'gemini_reader_settings';
 const STORAGE_KEY_PROGRESS = 'gemini_reader_progress';
+
+function getNovelText(novel: NovelContent | null): string {
+  if (!novel) return '';
+  if (typeof (novel as any).content === 'string' && (novel as any).content.length > 0) return (novel as any).content;
+  const chapters = (novel as any).chapters;
+  if (Array.isArray(chapters)) return chapters.map((c: any) => c.text ?? c.content ?? '').join('\n');
+  return '';
+}
 
 const App: React.FC = () => {
   // --- States ---
@@ -133,26 +140,24 @@ const App: React.FC = () => {
   };
 
   const playAudio = async () => {
-    // 不再支持語音朗讀，因為不抓取內容
-    const url = novel?.sourceUrl ? getSafeOpenUrl(novel.sourceUrl) : null;
-    if (url) {
-      window.open(url, '_blank');
-    } else {
-      setError('請先輸入有效的小說網址');
+    const text = getNovelText(novel);
+    if (!novel) {
+      setError('請先輸入小說網址並載入內容');
+      return;
     }
-    return;
-    
-    // 以下代碼已禁用（保留以防未來需要）
-    /*
-    if (!novel) return;
+    if (!text || text.length === 0) {
+      setError('目前沒有可朗讀的內容，請確認網址並重新載入');
+      return;
+    }
     try {
       setState(ReaderState.READING);
+      setError(null);
       const resumeFrom = currentTime;
       const ctx = initAudioContext();
       if (ctx.state === 'suspended') await ctx.resume();
       if (sourceRef.current) sourceRef.current.stop();
 
-      const textToRead = novel.content.slice(0, 4000); 
+      const textToRead = text.slice(0, 4000);
       const base64Audio = await generateSpeech(textToRead, voice);
       const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
       setDuration(audioBuffer.duration);
@@ -165,13 +170,11 @@ const App: React.FC = () => {
       source.playbackRate.value = playbackRate;
       source.connect(gainNode);
       gainNode.connect(ctx.destination);
-      
+
       source.onended = () => {
-        if (state === ReaderState.PLAYING) {
-          setState(ReaderState.IDLE);
-          setCurrentTime(0);
-          saveReadingProgress(0);
-        }
+        setState(ReaderState.IDLE);
+        setCurrentTime(0);
+        saveReadingProgress(0);
       };
 
       startTimeRef.current = ctx.currentTime;
@@ -181,10 +184,14 @@ const App: React.FC = () => {
       sourceRef.current = source;
       setState(ReaderState.PLAYING);
     } catch (err: any) {
-      console.error(err);
+      const msg = err?.message ?? err?.toString?.() ?? '';
       setState(ReaderState.ERROR);
+      if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota')) {
+        setError('語音服務無法使用：請在 Vercel 專案設定中新增環境變數 GEMINI_API_KEY');
+      } else {
+        setError(msg || '語音產生失敗，請稍後再試');
+      }
     }
-    */
   };
 
   const handlePlayPause = () => {
@@ -291,13 +298,37 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* 音頻控制已禁用，因為不再抓取內容 */}
-      {/* <AudioControls 
-        state={state} onPlayPause={handlePlayPause} onStop={handleStop} onNext={handleNextChapter}
-        voice={voice} onVoiceChange={setVoice} title={novel?.title || '未命名'}
-        volume={volume} onVolumeChange={handleVolumeChange} playbackRate={playbackRate} onPlaybackRateChange={handlePlaybackRateChange}
-        currentTime={currentTime} duration={duration}
-      /> */}
+      {/* 固定底部播放列 */}
+      <div className="fixed bottom-0 left-0 right-0 z-[100] flex items-center justify-center gap-4 px-4 py-4 bg-slate-900/95 border-t border-white/10 backdrop-blur-md shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
+        <span className="text-slate-400 text-sm font-medium truncate max-w-[120px] md:max-w-[200px]" title={novel?.title}>{novel?.title || '未選書'}</span>
+        <button
+          type="button"
+          onClick={handlePlayPause}
+          disabled={!getNovelText(novel).length || state === ReaderState.READING}
+          className="flex-shrink-0 w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white shadow-lg transition-colors"
+          title={state === ReaderState.READING ? '正在產生語音…' : state === ReaderState.PLAYING ? '暫停' : '播放'}
+        >
+          {state === ReaderState.READING ? (
+            <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.22-8.6" strokeLinecap="round"/></svg>
+          ) : state === ReaderState.PLAYING ? (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleStop}
+          className="flex-shrink-0 w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 transition-colors"
+          title="停止"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <span className="text-slate-500 text-xs tabular-nums">
+          {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}
+          {duration > 0 && ` / ${Math.floor(duration / 60)}:${(Math.floor(duration % 60)).toString().padStart(2, '0')}`}
+        </span>
+      </div>
 
       {/* Settings Modal */}
       {isSettingsOpen && (
