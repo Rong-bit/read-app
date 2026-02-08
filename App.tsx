@@ -146,7 +146,7 @@ const App: React.FC = () => {
       return;
     }
     if (!text || text.length === 0) {
-      setError('目前沒有可朗讀的內容，請確認網址並重新載入');
+      setError('此環境無法取得章節正文。若要朗讀請在本機執行 npm run dev:all，並從同一網址重新載入。');
       return;
     }
     try {
@@ -304,7 +304,7 @@ const App: React.FC = () => {
         <button
           type="button"
           onClick={handlePlayPause}
-          disabled={!getNovelText(novel).length || state === ReaderState.READING}
+          disabled={state === ReaderState.READING}
           className="flex-shrink-0 w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white shadow-lg transition-colors"
           title={state === ReaderState.READING ? '正在產生語音…' : state === ReaderState.PLAYING ? '暫停' : '播放'}
         >
