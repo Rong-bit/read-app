@@ -4,7 +4,6 @@ import Header from './components/header.tsx';
 import Sidebar from './components/sidebar.tsx';
 import NovelInput from './components/novelinput.tsx';
 import NovelDisplay from './components/noveldisplay.tsx';
-import AudioControls from './components/audiocontrols.tsx';
 import { NovelContent, ReaderState } from './types.ts';
 import { fetchNovelContent, generateSpeech } from './services/geminiService.ts';
 import { decode, decodeAudioData } from './utils/audioUtils.ts';
@@ -286,12 +285,35 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      <AudioControls
-        state={state} onPlayPause={handlePlayPause} onStop={handleStop} onNext={handleNextChapter}
-        voice={voice} onVoiceChange={setVoice} title={novel?.title || '未命名'}
-        volume={volume} onVolumeChange={handleVolumeChange} playbackRate={playbackRate} onPlaybackRateChange={handlePlaybackRateChange}
-        currentTime={currentTime} duration={duration}
-      />
+      {/* 固定底部播放列：高 z-index 確保在 iframe 內也看得見 */}
+      <div className="fixed bottom-0 left-0 right-0 z-[100] flex items-center justify-center gap-4 px-4 py-4 bg-slate-900/95 border-t border-white/10 backdrop-blur-md shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
+        <span className="text-slate-400 text-sm font-medium truncate max-w-[120px] md:max-w-[200px]" title={novel?.title}>{novel?.title || '未選書'}</span>
+        <button
+          type="button"
+          onClick={handlePlayPause}
+          disabled={!novel?.content?.length}
+          className="flex-shrink-0 w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white shadow-lg transition-colors"
+          title={state === ReaderState.PLAYING ? '暫停' : '播放'}
+        >
+          {state === ReaderState.PLAYING ? (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleStop}
+          className="flex-shrink-0 w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 transition-colors"
+          title="停止"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <span className="text-slate-500 text-xs tabular-nums">
+          {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}
+          {duration > 0 && ` / ${Math.floor(duration / 60)}:${(Math.floor(duration % 60)).toString().padStart(2, '0')}`}
+        </span>
+      </div>
 
       {/* Settings Modal */}
       {isSettingsOpen && (
