@@ -41,6 +41,7 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState<'dark' | 'sepia' | 'slate'>('dark');
   const [showResumeToast, setShowResumeToast] = useState(false);
   const [debugStep, setDebugStep] = useState<string | null>(null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
 
   // --- Refs ---
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -143,9 +144,13 @@ const App: React.FC = () => {
 
   const playAudio = async () => {
     const text = getNovelText(novel);
+    const addLog = (line: string) => {
+      setDebugLog(prev => [...prev.slice(-14), `[${new Date().toLocaleTimeString()}] ${line}`]);
+    };
     const DBG = (step: string, detail?: unknown) => {
+      const detailStr = detail !== undefined && detail !== null ? ` ${JSON.stringify(detail)}` : '';
       setDebugStep(step);
-      console.log('[Reade 除錯]', step, detail ?? '');
+      addLog(step + detailStr);
     };
     if (!novel) {
       DBG('失敗：沒有 novel');
@@ -169,7 +174,7 @@ const App: React.FC = () => {
       const textToRead = text.slice(0, 4000);
       DBG('2/5 呼叫 Gemini 產生語音…', { 字數: textToRead.length });
       const base64Audio = await generateSpeech(textToRead, voice);
-      DBG('3/5 語音已取得，解碼中…', { base64Length: typeof base64Audio === 'string' ? base64Audio.length : 'non-string' });
+      DBG('3/5 語音已取得，解碼中…', { base64長度: typeof base64Audio === 'string' ? base64Audio.length : '非字串' });
       const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
       setDuration(audioBuffer.duration);
 
@@ -200,9 +205,9 @@ const App: React.FC = () => {
       setDebugStep(null);
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? '';
-      const full = { message: msg, name: err?.name, stack: err?.stack, response: err?.response, status: err?.status };
       setDebugStep(`錯誤: ${msg}`);
-      console.error('[Reade 除錯] 播放失敗', full);
+      addLog(`錯誤: ${msg}`);
+      if (err?.name) addLog(`錯誤類型: ${err.name}`);
       setState(ReaderState.ERROR);
       if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota')) {
         setError('語音服務無法使用：請在 Vercel 專案設定中新增環境變數 GEMINI_API_KEY');
@@ -318,9 +323,23 @@ const App: React.FC = () => {
 
       {/* 固定底部播放列：高 z-index 確保在 iframe 內也看得見 */}
       <div className="fixed bottom-0 left-0 right-0 z-[100] flex flex-col gap-2 px-4 py-4 bg-slate-900/95 border-t border-white/10 backdrop-blur-md shadow-[0_-4px_24px_rgba(0,0,0,0.4)]">
+        {/* 畫面上的除錯紀錄（不需開 Console） */}
+        {debugLog.length > 0 && (
+          <div className="rounded-lg bg-black/40 border border-amber-500/40 p-2 max-h-28 overflow-y-auto">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-amber-400 text-xs font-bold">除錯紀錄（按播放後會更新）</span>
+              <button type="button" onClick={() => { setDebugLog([]); setDebugStep(null); }} className="text-slate-500 hover:text-white text-xs px-2">清除</button>
+            </div>
+            <div className="text-amber-200/90 text-xs font-mono space-y-0.5">
+              {debugLog.map((line, i) => (
+                <div key={i} className={line.includes('錯誤') ? 'text-red-400' : ''}>{line}</div>
+              ))}
+            </div>
+          </div>
+        )}
         {debugStep && (
           <div className="flex items-center justify-center gap-2 text-amber-400 text-xs font-mono">
-            <span>除錯: {debugStep}</span>
+            <span>目前: {debugStep}</span>
             <button type="button" onClick={() => setDebugStep(null)} className="text-slate-500 hover:text-white px-1" aria-label="關閉">×</button>
           </div>
         )}
