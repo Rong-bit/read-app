@@ -133,26 +133,23 @@ const App: React.FC = () => {
   };
 
   const playAudio = async () => {
-    // 不再支持語音朗讀，因為不抓取內容
-    const url = novel?.sourceUrl ? getSafeOpenUrl(novel.sourceUrl) : null;
-    if (url) {
-      window.open(url, '_blank');
-    } else {
-      setError('請先輸入有效的小說網址');
+    if (!novel) {
+      setError('請先輸入小說網址並載入內容');
+      return;
     }
-    return;
-    
-    // 以下代碼已禁用（保留以防未來需要）
-    /*
-    if (!novel) return;
+    if (!novel.content || novel.content.length === 0) {
+      setError('目前沒有可朗讀的內容，請確認網址並重新載入');
+      return;
+    }
     try {
       setState(ReaderState.READING);
+      setError(null);
       const resumeFrom = currentTime;
       const ctx = initAudioContext();
       if (ctx.state === 'suspended') await ctx.resume();
       if (sourceRef.current) sourceRef.current.stop();
 
-      const textToRead = novel.content.slice(0, 4000); 
+      const textToRead = novel.content.slice(0, 4000);
       const base64Audio = await generateSpeech(textToRead, voice);
       const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
       setDuration(audioBuffer.duration);
@@ -165,13 +162,11 @@ const App: React.FC = () => {
       source.playbackRate.value = playbackRate;
       source.connect(gainNode);
       gainNode.connect(ctx.destination);
-      
+
       source.onended = () => {
-        if (state === ReaderState.PLAYING) {
-          setState(ReaderState.IDLE);
-          setCurrentTime(0);
-          saveReadingProgress(0);
-        }
+        setState(ReaderState.IDLE);
+        setCurrentTime(0);
+        saveReadingProgress(0);
       };
 
       startTimeRef.current = ctx.currentTime;
@@ -183,8 +178,8 @@ const App: React.FC = () => {
     } catch (err: any) {
       console.error(err);
       setState(ReaderState.ERROR);
+      setError(err.message || '語音產生失敗，請稍後再試');
     }
-    */
   };
 
   const handlePlayPause = () => {
