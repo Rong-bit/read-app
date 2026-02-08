@@ -1,8 +1,9 @@
 {
-  "name": "gemini-小說朗讀器",
+  "name": "gemini-novel-reader",
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": { "node": ">=18" },
   "scripts": {
     "dev": "vite",
     "dev:server": "cd server && npm run dev",
