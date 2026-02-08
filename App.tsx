@@ -11,7 +11,7 @@ import { getSafeOpenUrl } from './utils/urlUtils.ts';
 const STORAGE_KEY_SETTINGS = 'gemini_reader_settings';
 const STORAGE_KEY_PROGRESS = 'gemini_reader_progress';
 
-/** 從 novel 取得要朗讀的純文字（支援多種後端回傳格式） */
+/** 從 novel 取得要朗讀的純文字（支援多種後端回傳格式，含 HTML） */
 function getNovelText(novel: NovelContent | null): string {
   if (!novel) return '';
   const n = novel as any;
@@ -24,24 +24,27 @@ function getNovelText(novel: NovelContent | null): string {
   push(n.text);
   push(n.body);
   push(n.articleText);
+  push(n.html);
   if (n.data) {
     push(n.data.content);
     push(n.data.text);
     push(n.data.body);
+    push(n.data.html);
   }
   if (n.chapter) {
     push(n.chapter.text);
     push(n.chapter.content);
     push(n.chapter.body);
+    push(n.chapter.html);
   }
   const chapters = n.chapters ?? n.data?.chapters;
   if (Array.isArray(chapters)) {
-    const joined = chapters.map((c: any) => c.text ?? c.content ?? c.body ?? '').join('\n');
+    const joined = chapters.map((c: any) => c.text ?? c.content ?? c.body ?? c.html ?? '').join('\n');
     if (joined.trim()) candidates.push(joined);
   }
   if (candidates.length > 0) {
     const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b));
-    if (best.length > 0) return best;
+    if (best.length > 0) return ensurePlainText(best);
   }
   // 後備：從物件中找最長的像內文的字串（排除 URL、title 等）
   const seen = new Set<string>();
@@ -66,7 +69,7 @@ function getNovelText(novel: NovelContent | null): string {
   collect(n);
   if (candidates.length > 0) {
     const best = candidates.reduce((a, b) => (a.length >= b.length ? a : b));
-    return best;
+    return ensurePlainText(best);
   }
   return '';
 }
@@ -78,6 +81,13 @@ function htmlToPlainText(html: string): string {
   div.innerHTML = html.trim();
   const text = (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim();
   return text;
+}
+
+/** 若字串像 HTML 則轉成純文字，否則原樣回傳 */
+function ensurePlainText(s: string): string {
+  if (!s || s.length < 10) return s;
+  if (/<[a-zA-Z][\s\S]*>/.test(s)) return htmlToPlainText(s);
+  return s;
 }
 
 /** 將文字切成適合 Web Speech API 的短句（依標點再依長度） */
@@ -169,7 +179,12 @@ const App: React.FC = () => {
       setState(ReaderState.FETCHING);
       setError(null);
       const data = await fetchNovelContent(input);
-      setNovel(data);
+      const extracted = getNovelText(data as NovelContent);
+      setNovel({
+        ...(typeof data === 'object' && data !== null ? data : {}),
+        title: (data as any)?.title ?? novel?.title ?? '載入的內容',
+        content: extracted || (typeof (data as any)?.content === 'string' ? (data as any).content : ''),
+      } as NovelContent);
       saveReadingProgress(0);
       setShowSearch(false); // 成功載入後隱藏搜尋區域
       setState(ReaderState.IDLE);
