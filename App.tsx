@@ -365,9 +365,12 @@ const App: React.FC = () => {
               </div>
 
               <NovelInput onSearch={handleSearch} isLoading={state === ReaderState.FETCHING} />
+              <p className="max-w-3xl mx-auto mt-3 text-xs text-slate-500 text-center">
+                用網址播放需後端成功抓取該頁內容；若無法播放請改用下方「貼上文章」。
+              </p>
 
               <div className="max-w-3xl mx-auto mt-8 p-6 bg-slate-800/30 rounded-2xl border border-slate-700/50">
-                <p className="text-sm font-bold text-slate-400 mb-3 uppercase tracking-wider">或貼上文章內容（API 失敗時可用）</p>
+                <p className="text-sm font-bold text-slate-400 mb-3 uppercase tracking-wider">貼上文章內容（推薦：免後端、一定可朗讀）</p>
                 <textarea
                   value={pasteText}
                   onChange={(e) => setPasteText(e.target.value)}
