@@ -224,20 +224,27 @@ const App: React.FC = () => {
     if (url) window.open(url, '_blank');
   };
 
+  const getNovelUrl = (n: NovelContent | null): string => {
+    if (!n) return '';
+    const a = n as any;
+    return a?.sourceUrl || a?.url || a?.link || a?.chapterUrl || '';
+  };
+
   const playWithBrowserTTS = async () => {
     let text = getNovelText(novel);
-    if (!text?.trim() && (novel as any)?.sourceUrl) {
+    const novelUrl = getNovelUrl(novel);
+    if (!text?.trim() && novelUrl) {
       setState(ReaderState.FETCHING);
       setError(null);
       try {
-        const data = await fetchNovelContent((novel as any).sourceUrl);
+        const data = await fetchNovelContent(novelUrl);
         const extracted = getNovelText(data as NovelContent);
         text = extracted || (typeof (data as any)?.content === 'string' ? (data as any).content : '');
         text = ensurePlainText(text);
         setNovel((prev: NovelContent | null) => ({
           ...(typeof data === 'object' && data !== null ? data : {}),
           title: (data as any)?.title ?? (prev as any)?.title ?? '載入的內容',
-          sourceUrl: (novel as any)?.sourceUrl ?? (data as any)?.sourceUrl,
+          sourceUrl: novelUrl || (data as any)?.sourceUrl,
           content: text,
         } as NovelContent));
       } catch (err: any) {
@@ -248,7 +255,7 @@ const App: React.FC = () => {
       setState(ReaderState.IDLE);
     }
     if (!text || text.length === 0) {
-      setError('目前沒有可朗讀的內容');
+      setError('目前沒有可朗讀的內容。請點選單「搜尋新小說」回到首頁，在「貼上文章」區貼上小說內文（從網頁複製整段 HTML 或純文字），按「載入並可朗讀」後再按播放。');
       return;
     }
     const segments = splitForBrowserTTS(text);
@@ -302,7 +309,7 @@ const App: React.FC = () => {
     }
     playWithBrowserTTS();
   };
-  const canPlay = novel && (getNovelText(novel).length > 0 || !!(novel as any)?.sourceUrl);
+  const canPlay = !!novel;
 
   const handleStop = () => {
     if (browserTTSActiveRef.current) {
