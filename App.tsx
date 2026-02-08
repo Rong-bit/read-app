@@ -310,8 +310,10 @@ const App: React.FC = () => {
         setDebugStep(`錯誤: ${msg}`);
         addLog(`錯誤: ${msg}`);
         setState(ReaderState.ERROR);
-        if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota') || msg.includes('GEMINI')) {
-          setError('語音無法播放：請設定 GEMINI_API_KEY（本機在 .env，Vercel 在專案環境變數）');
+        if (msg.includes('API key') || msg.includes('API key must be set') || msg.includes('GEMINI')) {
+          setError('Gemini 金鑰未生效。若在「本機」：請建 .env 並重啟。若在「Vercel」：環境變數只供後端用，且需重新部署後才會生效；若語音是在瀏覽器直連 Gemini，請改由後端 API 代為呼叫。');
+        } else if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('quota')) {
+          setError('語音無法播放：請設定 GEMINI_API_KEY（本機 .env，Vercel 環境變數）');
         } else {
           setError(msg || '語音產生失敗，請稍後再試');
         }
@@ -341,8 +343,10 @@ const App: React.FC = () => {
       setDebugStep(`錯誤: ${msg}`);
       addLog(`錯誤: ${msg}`);
       setState(ReaderState.ERROR);
-      if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('API key') || msg.includes('quota') || msg.includes('GEMINI')) {
-        setError('語音無法播放：請設定 GEMINI_API_KEY（本機 .env / Vercel 環境變數）');
+      if (msg.includes('API key') || msg.includes('API key must be set') || msg.includes('GEMINI')) {
+        setError('Gemini 金鑰未生效。若在「本機」：請建 .env 並重啟。若在「Vercel」：環境變數只供後端用，且需重新部署後才會生效；若語音是在瀏覽器直連 Gemini，請改由後端 API 代為呼叫。');
+      } else if (msg.includes('API') || msg.includes('401') || msg.includes('403') || msg.includes('quota')) {
+        setError('語音無法播放：請設定 GEMINI_API_KEY（本機 .env，Vercel 環境變數）');
       } else {
         setError(msg || '語音產生失敗，請稍後再試');
       }
