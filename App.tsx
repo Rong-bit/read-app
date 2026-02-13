@@ -572,7 +572,7 @@ const App: React.FC = () => {
               </div>
 
               <div className="bg-white/5 border border-white/10 rounded-2xl p-5 md:p-6 space-y-4">
-                <div className="text-sm text-slate-300 font-bold">網址抓取（可選）</div>
+                <div className="text-sm text-slate-300 font-bold">網址抓取（需後端支援）</div>
                 <div className="flex flex-col md:flex-row gap-3">
                   <input
                     value={webUrl}
@@ -588,6 +588,9 @@ const App: React.FC = () => {
                   >
                     {webLoading ? '抓取中...' : '抓取內容'}
                   </button>
+                </div>
+                <div className="text-xs text-slate-500">
+                  GitHub Pages 為純前端，無法抓取網址；請改用貼文字朗讀。
                 </div>
                 {webError && (
                   <div className="text-xs text-orange-400">{webError}</div>
