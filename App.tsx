@@ -319,8 +319,13 @@ const App: React.FC = () => {
   };
 
   const normalizeUrl = (input: string) => {
-    let url = input.trim();
+    let url = input
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\u3000/g, ' ')
+      .trim();
     if (!url) return '';
+    const match = url.match(/https?:\/\/[^\s]+/i);
+    if (match) url = match[0];
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       url = 'https://' + url;
     }
